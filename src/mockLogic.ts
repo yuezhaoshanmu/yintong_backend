@@ -621,6 +621,7 @@ export function taskTypeFeedback(task: ChildTask, userAnswer: ChildTask["userAns
 
 export function sourceText(source: MemoryStory["source"]): string {
   if (source === "voice") return "语音采录";
+  if (source === "camera") return "拍照上传";
   if (source === "photo") return "照片上传";
   return "手动输入";
 }

@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Camera,
   Check,
   Heart,
+  Images,
   ImagePlus,
   Loader2,
   Mic,
@@ -30,6 +32,7 @@ import { getStoryImage } from "../utils/storyImage";
 import SafeImage from "./SafeImage";
 import StoryDetailModal from "./StoryDetailModal";
 import ChatBotWidget from "./ai/ChatBotWidget";
+import CameraCapture from "./media/CameraCapture";
 
 type ElderTerminalProps = {
   textScale: "normal" | "large" | "super";
@@ -39,7 +42,7 @@ type ElderTerminalProps = {
 
 type RecordPhase = "idle" | "recording" | "ready";
 type AsrMode = "speech" | "manual" | "demo";
-type PhotoTab = "upload" | "template";
+type PhotoTab = "camera" | "upload" | "template";
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 type SpeechRecognitionLike = {
@@ -145,6 +148,7 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
   const [uploadedImageKey, setUploadedImageKey] = useState("");
   const [uploadedImageName, setUploadedImageName] = useState("");
   const [uploadedImageSize, setUploadedImageSize] = useState("");
+  const [photoUploadSource, setPhotoUploadSource] = useState<"photo" | "camera">("photo");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [photoErrors, setPhotoErrors] = useState<Record<string, string>>({});
   const [isPhotoSaving, setIsPhotoSaving] = useState(false);
@@ -441,7 +445,7 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
 
   function openPhotoModal(prefillText = "") {
     setPhotoModalOpen(true);
-    setPhotoTab("upload");
+    setPhotoTab("camera");
     setPhotoErrors({});
     if (prefillText) setPhotoStory(prefillText);
   }
@@ -462,6 +466,7 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
     setUploadedImageUrl(imageUrl);
     setUploadedImageName(file.name);
     setUploadedImageSize(fileSizeText(file.size));
+    setPhotoUploadSource("photo");
     setSelectedTemplateId("");
     try {
       await saveMediaBlob(imageKey, file);
@@ -470,6 +475,24 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
     } catch {
       setUploadedImageKey("");
       onShowToast("照片可在当前会话中预览，但持久化失败。", "error");
+    }
+  }
+
+  async function handleCameraCapture(file: File, previewUrl: string) {
+    setPhotoErrors({});
+    const imageKey = createId("image");
+    setUploadedImageUrl(previewUrl);
+    setUploadedImageName(file.name);
+    setUploadedImageSize(fileSizeText(file.size));
+    setPhotoUploadSource("camera");
+    setSelectedTemplateId("");
+    try {
+      await saveMediaBlob(imageKey, file);
+      setUploadedImageKey(imageKey);
+      onShowToast("照片已放入故事表单，可以继续填写故事。", "success");
+    } catch {
+      setUploadedImageKey("");
+      onShowToast("照片可在当前会话预览，但本地长期保存失败。", "error");
     }
   }
 
@@ -490,6 +513,7 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
     setUploadedImageKey("");
     setUploadedImageName("");
     setUploadedImageSize("");
+    setPhotoUploadSource("photo");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -511,7 +535,7 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
         title: photoTitle,
         fullText: photoStory,
         yearTag: photoYear || selectedTemplate?.yearTag || "年代待补充",
-        source: "photo",
+        source: uploadedImageUrl && photoUploadSource === "camera" ? "camera" : "photo",
         imageUrl,
         imageName: uploadedImageName || selectedTemplate?.title || "回忆模板",
         imageStorageKey: uploadedImageKey,
@@ -890,8 +914,8 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
           <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white border border-[#D1D5DB] shadow-2xl">
             <div className="sticky top-0 bg-white border-b border-[#D1D5DB] px-6 py-5 flex items-center justify-between z-10">
               <div>
-                <h3 className="text-2xl font-black text-[#111827]">上传照片并填写故事</h3>
-                <p className="mt-1 text-sm font-bold text-[#4B5563]">默认上传自己的照片，模板只作为备用。</p>
+                <h3 className="text-2xl font-black text-[#111827]">上传图片 / 记录回忆</h3>
+                <p className="mt-1 text-sm font-bold text-[#4B5563]">默认拍照上传，也可以从相册选择或使用模板图片。</p>
               </div>
               <button
                 onClick={() => setPhotoModalOpen(false)}
@@ -903,28 +927,57 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
             </div>
 
             <form onSubmit={savePhotoStory} className="p-6 space-y-5">
-              <div className="flex gap-2 rounded-xl bg-[#F4F2EB] p-1">
+              <div className="grid grid-cols-1 gap-3 rounded-xl bg-[#F4F2EB] p-2 md:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => setPhotoTab("camera")}
+                  className={`rounded-xl p-4 text-left font-black ${
+                    photoTab === "camera" ? "bg-white text-[#0E9F6E] shadow-sm" : "text-[#4B5563]"
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-lg">
+                    <Camera className="h-5 w-5" />
+                    拍照上传
+                  </span>
+                  <span className="mt-1 block text-xs font-bold leading-5 text-[#4B5563]">
+                    适合直接拍一张老物件、老照片或生活场景
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setPhotoTab("upload")}
-                  className={`h-11 flex-1 rounded-lg font-black ${
+                  className={`rounded-xl p-4 text-left font-black ${
                     photoTab === "upload" ? "bg-white text-[#0E9F6E] shadow-sm" : "text-[#4B5563]"
                   }`}
                 >
-                  上传我的照片
+                  <span className="flex items-center gap-2 text-lg">
+                    <Upload className="h-5 w-5" />
+                    本地上传
+                  </span>
+                  <span className="mt-1 block text-xs font-bold leading-5 text-[#4B5563]">
+                    从手机或电脑相册选择照片
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setPhotoTab("template")}
-                  className={`h-11 flex-1 rounded-lg font-black ${
+                  className={`rounded-xl p-4 text-left font-black ${
                     photoTab === "template" ? "bg-white text-[#0E9F6E] shadow-sm" : "text-[#4B5563]"
                   }`}
                 >
-                  使用回忆模板
+                  <span className="flex items-center gap-2 text-lg">
+                    <Images className="h-5 w-5" />
+                    模板图片
+                  </span>
+                  <span className="mt-1 block text-xs font-bold leading-5 text-[#4B5563]">
+                    没有照片时，可先使用系统模板
+                  </span>
                 </button>
               </div>
 
-              {photoTab === "upload" ? (
+              {photoTab === "camera" ? (
+                <CameraCapture onCapture={handleCameraCapture} onCancel={() => setPhotoTab("upload")} />
+              ) : photoTab === "upload" ? (
                 <div
                   onDragOver={(event) => {
                     event.preventDefault();

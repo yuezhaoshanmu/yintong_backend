@@ -1,4 +1,4 @@
-export type StorySource = "voice" | "photo" | "manual";
+export type StorySource = "voice" | "photo" | "camera" | "manual";
 export type SafetyStatus = "safe" | "pending" | "blocked";
 export type TaskType = "observe" | "classify" | "sequence" | "assemble" | "quiz" | "emotion";
 export type TaskStatus = "locked" | "active" | "completed";

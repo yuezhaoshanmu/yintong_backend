@@ -645,7 +645,7 @@ function reducer(state: AppState, action: Action): AppState {
               storyId: action.story.id,
               riskWords: state.riskWords,
             })
-          : action.story.source === "photo"
+          : action.story.source === "photo" || action.story.source === "camera"
             ? createSafetyLog({
                 sourceType: "PHOTO",
                 content: `上传照片 ${action.story.imageName ?? "未命名照片"}，并生成回忆《${action.story.title}》。`,

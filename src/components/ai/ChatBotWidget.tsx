@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
+  Loader2,
   Mic,
   Phone,
   RotateCcw,
@@ -28,6 +29,11 @@ import {
   VoiceRatePreset,
   VoiceSettings,
 } from "../../utils/speech";
+import {
+  isSpeechRecognitionSupported,
+  startSpeechRecognition,
+  VoiceInputState,
+} from "../../utils/speechRecognition";
 import AiVoiceCallPanel from "./AiVoiceCallPanel";
 
 export type ChatBotWidgetProps = {
@@ -87,6 +93,12 @@ const rateLabels: Record<VoiceRatePreset, string> = {
   fast: "稍快",
 };
 
+function formatVoiceSeconds(seconds: number): string {
+  const mins = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const secs = Math.floor(seconds % 60).toString().padStart(2, "0");
+  return `${mins}:${secs}`;
+}
+
 export default function ChatBotWidget({
   role,
   currentUser,
@@ -109,8 +121,17 @@ export default function ChatBotWidget({
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     getAiAssistantMode() === "deepseek" ? "checking" : "fallback"
   );
+  const [voiceInputState, setVoiceInputState] = useState<VoiceInputState>("idle");
+  const [voiceInputText, setVoiceInputText] = useState("");
+  const [voiceInputError, setVoiceInputError] = useState("");
+  const [voiceInputSeconds, setVoiceInputSeconds] = useState(0);
   const noVoiceNoticeShownRef = useRef(false);
   const cloudTtsNoticeShownRef = useRef(false);
+  const voiceRecognitionRef = useRef<{ stop: () => void } | null>(null);
+  const voiceInputFinalRef = useRef("");
+  const voiceInputInterimRef = useRef("");
+  const voiceInputHadErrorRef = useRef(false);
+  const voiceTimerRef = useRef<number | null>(null);
 
   const assistantEnabled =
     role === "child" ? state.aiSettings.childAssistantEnabled : state.aiSettings.elderAssistantEnabled;
@@ -155,7 +176,10 @@ export default function ChatBotWidget({
   );
 
   useEffect(() => {
-    return () => stopSpeaking();
+    return () => {
+      stopSpeaking();
+      stopVoiceInput();
+    };
   }, []);
 
   useEffect(() => {
@@ -216,9 +240,44 @@ export default function ChatBotWidget({
     onShowToast(message, "info");
   }
 
+  function startVoiceTimer() {
+    if (voiceTimerRef.current != null) window.clearInterval(voiceTimerRef.current);
+    setVoiceInputSeconds(0);
+    voiceTimerRef.current = window.setInterval(() => {
+      setVoiceInputSeconds((value) => value + 1);
+    }, 1000);
+  }
+
+  function stopVoiceTimer() {
+    if (voiceTimerRef.current != null) {
+      window.clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+  }
+
+  function resetVoiceInput() {
+    voiceRecognitionRef.current?.stop();
+    stopVoiceTimer();
+    voiceRecognitionRef.current = null;
+    voiceInputFinalRef.current = "";
+    voiceInputInterimRef.current = "";
+    voiceInputHadErrorRef.current = false;
+    setVoiceInputState("idle");
+    setVoiceInputText("");
+    setVoiceInputError("");
+    setVoiceInputSeconds(0);
+  }
+
+  function stopVoiceInput() {
+    voiceRecognitionRef.current?.stop();
+    stopVoiceTimer();
+    voiceRecognitionRef.current = null;
+  }
+
   function playReply(messageId: string, text: string, fromAuto = false) {
     if (!isSpeechSupported()) {
       onShowToast("当前浏览器不支持语音播报，请阅读文字回复。", "info");
+      setVoiceInputState("idle");
       return;
     }
     speakText(text, {
@@ -226,10 +285,17 @@ export default function ChatBotWidget({
       voiceURI: voiceSettings.selectedVoiceURI,
       ratePreset: voiceSettings.ratePreset,
       onNotice: handleSpeechNotice,
-      onStart: () => setSpeakingMessageId(messageId),
-      onEnd: () => setSpeakingMessageId((current) => (current === messageId ? "" : current)),
+      onStart: () => {
+        setSpeakingMessageId(messageId);
+        setVoiceInputState("speaking");
+      },
+      onEnd: () => {
+        setSpeakingMessageId((current) => (current === messageId ? "" : current));
+        setVoiceInputState((current) => (current === "speaking" ? "idle" : current));
+      },
       onError: () => {
         setSpeakingMessageId("");
+        setVoiceInputState("idle");
         onShowToast(
           fromAuto ? "浏览器阻止了自动朗读，请点击播放按钮。" : "语音播报失败，请稍后再试。",
           "error"
@@ -241,6 +307,7 @@ export default function ChatBotWidget({
   function stopReply() {
     stopSpeaking();
     setSpeakingMessageId("");
+    setVoiceInputState((current) => (current === "speaking" ? "idle" : current));
   }
 
   function previewVoice() {
@@ -251,11 +318,16 @@ export default function ChatBotWidget({
     playReply("voice-preview", sample);
   }
 
-  async function sendMessage(text = input) {
+  async function sendMessage(text = input, options: { fromVoice?: boolean } = {}) {
     const clean = text.trim();
     if (!clean || loading) return;
     setInput("");
     setLoading(true);
+    if (options.fromVoice) {
+      setVoiceInputState("thinking");
+      setVoiceInputText(clean);
+      setVoiceInputError("");
+    }
     const userMessage: AiChatMessage = {
       id: `ai-msg-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       familyId: currentUser.familyId,
@@ -293,6 +365,7 @@ export default function ChatBotWidget({
       addAiChatMessages([assistantMessage]);
       setConnectionState(answer.provider === "deepseek" ? "connected" : "fallback");
       if (voiceSettings.autoSpeak) playReply(assistantMessage.id, answer.content, true);
+      else if (options.fromVoice) resetVoiceInput();
       if (answer.notice) onShowToast(answer.notice, "info");
     } catch {
       const fallbackId = `ai-msg-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -316,6 +389,7 @@ export default function ChatBotWidget({
       ]);
       setConnectionState("fallback");
       if (voiceSettings.autoSpeak) playReply(fallbackId, fallback, true);
+      else if (options.fromVoice) resetVoiceInput();
       onShowToast("AI 服务暂时不可用，已切换为演示回复。", "info");
     } finally {
       setLoading(false);
@@ -323,30 +397,228 @@ export default function ChatBotWidget({
   }
 
   function startVoiceInput() {
-    const RecognitionCtor = getSpeechRecognitionCtor();
-    if (!RecognitionCtor) {
-      onShowToast("当前浏览器不能自动识别语音，可以直接打字。", "info");
+    if (loading || voiceInputState === "permission_requesting" || voiceInputState === "recognizing") return;
+    if (voiceInputState === "listening") {
+      stopListeningForVoiceInput();
       return;
     }
-    try {
-      const recognition = new RecognitionCtor();
-      recognition.lang = "zh-CN";
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.onresult = (event) => {
-        let text = "";
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          text += event.results[index][0]?.transcript ?? "";
-        }
-        setInput(text.trim());
-      };
-      recognition.onerror = () => onShowToast("没有听清楚，可以再试一次。", "info");
-      recognition.onend = () => undefined;
-      recognition.start();
-    } catch {
-      onShowToast("语音输入启动失败，可以先打字。", "error");
+    stopReply();
+    if (!isSpeechRecognitionSupported()) {
+      setVoiceInputState("error");
+      setVoiceInputError("当前浏览器不支持语音识别，请改用文字输入。");
+      onShowToast("当前浏览器不支持语音识别，请改用文字输入。", "info");
+      return;
     }
+
+    voiceInputFinalRef.current = "";
+    voiceInputInterimRef.current = "";
+    voiceInputHadErrorRef.current = false;
+    setVoiceInputText("");
+    setVoiceInputError("");
+    setVoiceInputSeconds(0);
+    setVoiceInputState("permission_requesting");
+    voiceRecognitionRef.current = startSpeechRecognition({
+      lang: "zh-CN",
+      onStart: () => {
+        setVoiceInputState("listening");
+        startVoiceTimer();
+      },
+      onResult: (text, isFinal) => {
+        if (!text) return;
+        if (isFinal) {
+          voiceInputFinalRef.current = `${voiceInputFinalRef.current}${text}`;
+          voiceInputInterimRef.current = "";
+        } else {
+          voiceInputInterimRef.current = text;
+        }
+        setVoiceInputText(`${voiceInputFinalRef.current}${voiceInputInterimRef.current}`.trim());
+      },
+      onError: (message) => {
+        voiceInputHadErrorRef.current = true;
+        stopVoiceTimer();
+        setVoiceInputState("error");
+        setVoiceInputError(message);
+        onShowToast(message, "info");
+      },
+      onEnd: () => {
+        stopVoiceTimer();
+        voiceRecognitionRef.current = null;
+        if (voiceInputHadErrorRef.current) return;
+        const clean = `${voiceInputFinalRef.current}${voiceInputInterimRef.current}`.trim();
+        if (clean) {
+          setVoiceInputText(clean);
+          setInput(clean);
+          setVoiceInputState("recognized");
+          return;
+        }
+        setVoiceInputState("error");
+        setVoiceInputError("没有听清楚，可以再说一遍。");
+      },
+    });
   }
+
+  function stopListeningForVoiceInput() {
+    setVoiceInputState("recognizing");
+    stopVoiceTimer();
+    voiceRecognitionRef.current?.stop();
+  }
+
+  function sendRecognizedVoiceInput() {
+    const clean = voiceInputText.trim();
+    if (!clean) {
+      setVoiceInputState("error");
+      setVoiceInputError("没有听清楚，可以再说一遍。");
+      return;
+    }
+    void sendMessage(clean, { fromVoice: true });
+  }
+
+  function renderVoiceInputStatus() {
+    const elderCopy = {
+      listening: "正在听您说话",
+      heard: "我听到了：",
+      thinking: "AI 正在想一想……",
+      speaking: "AI 正在朗读回复",
+      retry: "重新说一遍",
+    };
+    const childCopy = {
+      listening: "我在听你说哦",
+      heard: "我听到了这句话：",
+      thinking: "故事小伙伴想一想……",
+      speaking: "我来读给你听",
+      retry: "重新说一遍",
+    };
+    const copy = role === "elder" ? elderCopy : childCopy;
+
+    if (voiceInputState === "permission_requesting") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#D1D5DB] bg-[#FAF8F2] p-3 text-sm font-bold text-[#4B5563]">
+          <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-[#0E9F6E]" />
+          正在请求麦克风权限……
+        </div>
+      );
+    }
+
+    if (voiceInputState === "listening") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#FDBA74] bg-[#FFF7ED] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="flex items-center gap-2 font-black text-[#9A3412]">
+              <span className="h-3 w-3 rounded-full bg-[#EA580C] animate-pulse" />
+              {copy.listening}
+            </p>
+            <span className="rounded-lg bg-white px-2 py-1 text-sm font-black text-[#9A3412]">
+              {formatVoiceSeconds(voiceInputSeconds)}
+            </span>
+          </div>
+          <p className="mt-2 text-sm font-bold text-[#6B4F35]">说完后点击“停止说话”。</p>
+        </div>
+      );
+    }
+
+    if (voiceInputState === "recognizing") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#D1D5DB] bg-[#FAF8F2] p-3 text-sm font-bold text-[#4B5563]">
+          <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-[#0E9F6E]" />
+          正在识别你的声音……
+        </div>
+      );
+    }
+
+    if (voiceInputState === "recognized") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#0E9F6E] bg-[#EAF5F0] p-3">
+          <p className="text-sm font-black text-[#0E6F52]">{copy.heard}</p>
+          <p className="mt-1 break-words font-black leading-6 text-[#111827]">{voiceInputText}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={sendRecognizedVoiceInput}
+              className="h-10 rounded-lg bg-[#0E9F6E] px-3 text-sm font-black text-white"
+            >
+              发送给 AI
+            </button>
+            <button
+              type="button"
+              onClick={startVoiceInput}
+              className="h-10 rounded-lg border border-[#0E9F6E] px-3 text-sm font-black text-[#0E6F52]"
+            >
+              {copy.retry}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (voiceInputState === "thinking") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#D1D5DB] bg-[#FAF8F2] p-3 text-sm font-bold text-[#4B5563]">
+          <Loader2 className="mr-2 inline h-4 w-4 animate-spin text-[#0E9F6E]" />
+          {copy.thinking}
+        </div>
+      );
+    }
+
+    if (voiceInputState === "speaking") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#0E9F6E] bg-[#EAF5F0] p-3">
+          <p className="font-black text-[#0E6F52]">{copy.speaking}</p>
+          <button
+            type="button"
+            onClick={stopReply}
+            className="mt-2 inline-flex h-10 items-center gap-2 rounded-lg border border-[#B42318] bg-white px-3 text-sm font-black text-[#B42318]"
+          >
+            <Square className="h-4 w-4" />
+            停止朗读
+          </button>
+        </div>
+      );
+    }
+
+    if (voiceInputState === "error") {
+      return (
+        <div className="mb-3 rounded-xl border border-[#FCA5A5] bg-[#FEF2F2] p-3">
+          <p className="text-sm font-black text-[#B42318]">{voiceInputError || "语音输入暂时不可用，请改用文字输入。"}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={startVoiceInput}
+              className="h-10 rounded-lg border border-[#B42318] px-3 text-sm font-black text-[#B42318]"
+            >
+              重试
+            </button>
+            <button
+              type="button"
+              onClick={resetVoiceInput}
+              className="h-10 rounded-lg bg-white px-3 text-sm font-black text-[#4B5563]"
+            >
+              改用文字输入
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  const voiceButtonDisabled =
+    voiceInputState === "permission_requesting" ||
+    voiceInputState === "recognizing" ||
+    voiceInputState === "thinking" ||
+    loading;
+  const voiceButtonText =
+    voiceInputState === "listening"
+      ? `正在听 ${formatVoiceSeconds(voiceInputSeconds)}`
+      : voiceInputState === "recognizing"
+        ? "识别中"
+        : voiceInputState === "permission_requesting"
+          ? "请求中"
+          : "语音输入";
+  const voiceButtonClass =
+    voiceInputState === "listening"
+      ? "border-[#EA580C] bg-[#FFF7ED] text-[#C2410C] shadow-sm"
+      : "border-[#9BB8A7] bg-[#F6FAF8] text-[#0E6F52] hover:bg-[#EAF5F0]";
 
   if (!assistantEnabled) {
     return (
@@ -395,6 +667,8 @@ export default function ChatBotWidget({
               <button
                 onClick={() => {
                   stopReply();
+                  stopVoiceInput();
+                  resetVoiceInput();
                   setVoiceCallOpen(false);
                   setOpen(false);
                 }}
@@ -574,23 +848,35 @@ export default function ChatBotWidget({
                 </button>
               ))}
             </div>
-            <div className="flex items-end gap-2">
+            {renderVoiceInputStatus()}
+            <div className="flex flex-wrap items-end gap-2">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 rows={2}
                 placeholder={role === "elder" ? "慢慢说，我帮您记下来" : "问我一个小问题"}
-                className="min-h-12 flex-1 resize-none rounded-xl border border-[#D1D5DB] px-3 py-2 text-sm font-bold leading-6 outline-none focus:border-[#0E9F6E]"
+                disabled={voiceInputState === "thinking"}
+                className="min-h-12 min-w-[180px] flex-1 resize-none rounded-xl border border-[#D1D5DB] px-3 py-2 text-sm font-bold leading-6 outline-none focus:border-[#0E9F6E] disabled:bg-[#F3F4F6]"
               />
               <button
                 onClick={startVoiceInput}
-                className="flex h-11 w-11 items-center justify-center rounded-xl border border-[#D1D5DB] hover:bg-[#F3F4F6]"
+                disabled={voiceButtonDisabled}
+                title="点击开始语音输入"
+                className={`flex h-11 min-w-[118px] items-center justify-center gap-2 rounded-xl border px-3 text-sm font-black disabled:opacity-60 ${voiceButtonClass}`}
                 aria-label="语音输入"
               >
-                <Mic className="h-5 w-5" />
+                {voiceInputState === "recognizing" || voiceInputState === "permission_requesting" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Mic className={`h-4 w-4 ${voiceInputState === "listening" ? "animate-pulse" : ""}`} />
+                )}
+                <span>{voiceButtonText}</span>
               </button>
               <button
-                onClick={() => setVoiceCallOpen(true)}
+                onClick={() => {
+                  stopVoiceInput();
+                  setVoiceCallOpen(true);
+                }}
                 className="flex h-11 w-11 items-center justify-center rounded-xl border border-[#D1D5DB] hover:bg-[#F3F4F6]"
                 aria-label="语音通话"
               >
