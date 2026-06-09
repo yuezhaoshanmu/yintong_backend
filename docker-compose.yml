@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # 1. Nginx Reverse Proxy & TLS Termination
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: yintong_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - web
+    restart: always
+    networks:
+      - yintong_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 2. Python REST Engine (FastAPI)
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yintong_rest_engine
+    expose:
+      - "8000"
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=yintong_user
+      - MYSQL_PASSWORD=yintong_secure_pass_2026
+      - MYSQL_DB=yintong_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_ENCRYPTION_KEY=default_32_byte_secret_key_123456
+      - DB_BLIND_INDEX_SALT=default_blind_index_salt_secure
+      - JWT_SECRET_KEY=yintong_jwt_signing_secret_key_extremely_secure_987654321
+      - ALLOW_MOCK_SERVICES=True
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+    networks:
+      - yintong_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 3. MySQL 8.0 Relational Database
+  mysql:
+    image: mysql:8.0
+    container_name: yintong_mysql
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=yintong_root_pass_2026
+      - MYSQL_DATABASE=yintong_db
+      - MYSQL_USER=yintong_user
+      - MYSQL_PASSWORD=yintong_secure_pass_2026
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: always
+    networks:
+      - yintong_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "yintong_user", "-p`yintong_secure_pass_2026`"]
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 4. Redis 7.0 Cache Node for Anti-Replay Tokens
+  redis:
+    image: redis:7.0-alpine
+    container_name: yintong_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    networks:
+      - yintong_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  yintong_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16

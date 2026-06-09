@@ -1,0 +1,32 @@
+{
+  "白兔糖": {
+    "source": "6a0f0c4fbba363bf0b52bf42585a57bd.png",
+    "target": "public/image/object/white-rabbit-candy.jpg",
+    "usage": "儿童端关键物件：白兔糖"
+  },
+  "玻璃罐": {
+    "source": "91ef2d4ccd73f77889d99b59ddd952fc.png",
+    "target": "public/image/object/glass-jar.jpg",
+    "usage": "儿童端关键物件：玻璃罐"
+  },
+  "供销社": {
+    "source": "e8b989416573790653604bdaa8cb050b.png",
+    "target": "public/image/object/supply-cooperative.jpg",
+    "usage": "儿童端关键物件：供销社"
+  },
+  "平板电脑": {
+    "source": "d4a7dad639086a88a5bfcfc602f6efa1.png",
+    "target": "public/image/object/tablet.jpg",
+    "usage": "儿童端干扰项：平板电脑"
+  },
+  "披萨": {
+    "source": "e1d5f9a73f78d756b596f74b1e50e50a.png",
+    "target": "public/image/object/pizza.jpg",
+    "usage": "儿童端干扰项：披萨"
+  },
+  "飞机": {
+    "source": "b93e468ede0b5fe2bbe9e43828cc45fe.png",
+    "target": "public/image/object/airplane.jpg",
+    "usage": "儿童端干扰项：飞机"
+  }
+}

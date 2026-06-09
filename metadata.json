@@ -1,0 +1,6 @@
+{
+  "name": "银童共育",
+  "description": "银童共育 - 银发长辈与童真幼童的跨世代共育与情感连接终端。包含长辈探索、儿童沙盒游戏及家庭管理中心。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

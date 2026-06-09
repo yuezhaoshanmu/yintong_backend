@@ -1,0 +1,85 @@
+{
+  "0fc6a592d0393d047a83072ca316b0a9.png": {
+    "category": "story",
+    "usage": "家庭相册、老照片、相册桌面与故事缺图占位",
+    "targets": [
+      "public/image/story/family-album-living-room.jpg",
+      "public/image/object/family-album.jpg",
+      "public/image/object/old-photo.jpg",
+      "public/image/background/family-album-table.jpg",
+      "public/image/child/child-card-game.jpg",
+      "public/image/placeholder/story-placeholder.jpg"
+    ]
+  },
+  "20004b72f74fd1b14086ad75ed8d3e06.png": {
+    "category": "avatar",
+    "usage": "社区守护员头像",
+    "target": "public/image/avatar/community-worker-01.jpg"
+  },
+  "24bd89e8fdf47265f07c8c03f615a558.png": {
+    "category": "avatar",
+    "usage": "萌萌头像、儿童端听故事与送花场景复用",
+    "targets": [
+      "public/image/avatar/child-girl-01.jpg",
+      "public/image/child/child-listening-story.jpg",
+      "public/image/child/child-sending-flower.jpg"
+    ]
+  },
+  "79f163f1827a90fcad8e48eb8da006bc.png": {
+    "category": "avatar",
+    "usage": "王爷爷头像",
+    "target": "public/image/avatar/grandpa-01.jpg"
+  },
+  "7f5c160c97130121db84fbb5baaadc59.png": {
+    "category": "story",
+    "usage": "糖果罐故事封面、糖果物品卡与物品占位",
+    "targets": [
+      "public/image/story/candy-glass-jar.jpg",
+      "public/image/object/candy-jar.jpg",
+      "public/image/object/enamel-cup.jpg",
+      "public/image/placeholder/object-placeholder.jpg"
+    ]
+  },
+  "9471f6a905ca60056a40cf35fba6c61f.png": {
+    "category": "story",
+    "usage": "老式收音机故事封面、收音机物品卡、天线旋钮近似复用与音频占位",
+    "targets": [
+      "public/image/story/old-radio-family-dinner.jpg",
+      "public/image/object/old-radio.jpg",
+      "public/image/object/radio-knob.jpg",
+      "public/image/object/radio-antenna.jpg",
+      "public/image/object/desk-fan.jpg",
+      "public/image/placeholder/audio-placeholder.jpg"
+    ]
+  },
+  "b1cbf02e1cfed9886a231325e4e77234.png": {
+    "category": "story",
+    "usage": "缝纫机故事封面、缝纫机物品卡与暖水瓶近似复用",
+    "targets": [
+      "public/image/story/sewing-machine-home.jpg",
+      "public/image/object/sewing-machine.jpg",
+      "public/image/object/thermos-bottle.jpg"
+    ]
+  },
+  "c1d5ff68f6b33a8ec9caa4769a83cd53.png": {
+    "category": "story",
+    "usage": "老自行车故事封面与自行车物品卡",
+    "targets": [
+      "public/image/story/old-bicycle-alley.jpg",
+      "public/image/object/old-bicycle.jpg"
+    ]
+  },
+  "c82be0be27ee4b3c89530b95f2e52c23.png": {
+    "category": "avatar",
+    "usage": "王女士/家属头像与中性头像占位",
+    "targets": [
+      "public/image/avatar/father-01.jpg",
+      "public/image/placeholder/avatar-placeholder.jpg"
+    ]
+  },
+  "ee0010c99b8ac351b043b3b72812cb02.png": {
+    "category": "avatar",
+    "usage": "李奶奶头像",
+    "target": "public/image/avatar/grandma-01.jpg"
+  }
+}

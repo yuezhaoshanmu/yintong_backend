@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">真实照片待替换</title>
+  <desc id="desc">用于路演前占位的柔和照片占位图</desc>
+  <rect width="1200" height="800" fill="#F7F0E4"/>
+  <rect x="88" y="72" width="1024" height="656" rx="28" fill="#FFFDF8" stroke="#D8C8B0" stroke-width="4"/>
+  <rect x="136" y="120" width="928" height="500" rx="18" fill="#EFE3D1"/>
+  <path d="M196 560L400 365L560 505L680 420L1004 560" fill="none" stroke="#A9845F" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <circle cx="880" cy="230" r="58" fill="#D7B98E" opacity=".7"/>
+  <text x="600" y="675" text-anchor="middle" font-family="Arial, 'Microsoft YaHei', sans-serif" font-size="34" font-weight="700" fill="#6B4F35">真实照片待替换</text>
+  <text x="600" y="722" text-anchor="middle" font-family="Arial, 'Microsoft YaHei', sans-serif" font-size="22" fill="#8A6D4D">请放入家庭相册、老物件或真实生活场景照片</text>
+</svg>
