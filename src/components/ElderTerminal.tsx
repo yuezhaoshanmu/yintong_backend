@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
   Camera,
   Check,
   Heart,
@@ -11,7 +10,6 @@ import {
   Play,
   RefreshCw,
   Send,
-  ShieldCheck,
   Trash2,
   Upload,
   X,
@@ -157,8 +155,6 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
 
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
-  const [sosOpen, setSosOpen] = useState(false);
-  const [sosDone, setSosDone] = useState(false);
 
   const sizes = {
     title: textScale === "super" ? "text-4xl" : textScale === "large" ? "text-3xl" : "text-2xl",
@@ -897,18 +893,6 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
         </div>
       </section>
 
-      <button
-        onClick={() => {
-          setSosOpen(true);
-          setSosDone(false);
-        }}
-        className="fixed right-5 bottom-6 z-40 h-16 w-16 rounded-full border-4 border-[#B42318] bg-[#FEE2E2] text-[#B42318] shadow-lg hover:bg-[#FCA5A5] flex flex-col items-center justify-center"
-        aria-label="紧急联系"
-      >
-        <AlertTriangle className="h-6 w-6" />
-        <span className="text-xs font-black">联系</span>
-      </button>
-
       {photoModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/55 p-4">
           <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white border border-[#D1D5DB] shadow-2xl">
@@ -1115,43 +1099,6 @@ export default function ElderTerminal({ textScale, setTextScale, onShowToast }: 
                 保存并生成回忆
               </button>
             </form>
-          </div>
-        </div>
-      )}
-
-      {sosOpen && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 border-4 border-[#B42318] text-center shadow-2xl">
-            {sosDone ? (
-              <>
-                <ShieldCheck className="mx-auto h-14 w-14 text-[#0E9F6E]" />
-                <h3 className="mt-3 text-2xl font-black text-[#111827]">已记录平安反馈</h3>
-                <p className="mt-2 font-bold text-[#4B5563]">家属端会收到“长辈已取消紧急联系”的提示。</p>
-                <button onClick={() => setSosOpen(false)} className="mt-5 h-12 w-full rounded-xl bg-[#0E9F6E] font-black text-white">
-                  返回桌面
-                </button>
-              </>
-            ) : (
-              <>
-                <AlertTriangle className="mx-auto h-14 w-14 text-[#B42318]" />
-                <h3 className="mt-3 text-2xl font-black text-[#111827]">是否联系家属？</h3>
-                <p className="mt-2 font-bold text-[#4B5563]">会提醒王女士和社区守护员尽快联系。</p>
-                <div className="mt-5 grid grid-cols-2 gap-3">
-                  <button onClick={() => setSosDone(true)} className="h-12 rounded-xl border border-[#D1D5DB] font-black hover:bg-[#F3F4F6]">
-                    按错了
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSosDone(true);
-                      onShowToast("已通知家属，请保持电话畅通。", "info");
-                    }}
-                    className="h-12 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
-                  >
-                    立即联系
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         </div>
       )}
