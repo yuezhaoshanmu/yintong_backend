@@ -10,12 +10,13 @@ import {
   NO_NATURAL_CHINESE_VOICE_MESSAGE,
   speakText,
   stopSpeaking,
+  TtsState,
   VoiceSettings,
 } from "../../utils/speech";
 import {
+  createSpeechRecognizer,
   isSpeechRecognitionSupported,
-  startSpeechRecognition,
-  VoiceInputState,
+  SpeechRecognitionState,
 } from "../../utils/speechRecognition";
 
 type AiVoiceCallPanelProps = {
@@ -26,8 +27,6 @@ type AiVoiceCallPanelProps = {
   onClose: () => void;
   onShowToast: (message: string, type?: ToastKind) => void;
 };
-
-type MicState = "off" | "requesting" | "on" | "denied";
 
 function voiceMode() {
   return import.meta.env.VITE_AI_VOICE_MODE === "realtime" ? "realtime" : "browser";
@@ -48,50 +47,57 @@ export default function AiVoiceCallPanel({
   onShowToast,
 }: AiVoiceCallPanelProps) {
   const { addAiChatMessages, addAiCallSession, endAiCallSession } = useSilverStore();
-  const recognitionSupported = isSpeechRecognitionSupported();
-  const [voiceState, setVoiceState] = useState<VoiceInputState>("idle");
-  const [micState, setMicState] = useState<MicState>(recognitionSupported ? "off" : "denied");
-  const [micMuted, setMicMuted] = useState(false);
+  const [speechRecognitionState, setSpeechRecognitionState] = useState<SpeechRecognitionState>(() =>
+    isSpeechRecognitionSupported() ? "idle" : "unsupported"
+  );
+  const [ttsState, setTtsState] = useState<TtsState>(() => (isSpeechSupported() ? "ready" : "unsupported"));
   const [manualText, setManualText] = useState("");
   const [transcript, setTranscript] = useState("");
-  const [reply, setReply] = useState(
-    role === "elder" ? "我在呢。您说一句，我听着。" : "我在哦。你说一句，我陪你想。"
-  );
+  const [reply, setReply] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [listeningSeconds, setListeningSeconds] = useState(0);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const [voiceOpeningText, setVoiceOpeningText] = useState("正在打开麦克风……");
+  const [ttsMessage, setTtsMessage] = useState("");
   const [voiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
   const sessionIdRef = useRef(`ai-call-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   const startedAtRef = useRef(Date.now());
-  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const recognitionRef = useRef<{ start: () => void; stop: () => void; abort: () => void } | null>(null);
   const finalTranscriptRef = useRef("");
   const interimTranscriptRef = useRef("");
   const recognitionHadErrorRef = useRef(false);
   const ignoreRecognitionEndRef = useRef(false);
   const activeRef = useRef(true);
   const listenTimerRef = useRef<number | null>(null);
+  const permissionTextTimerRef = useRef<number | null>(null);
   const noVoiceNoticeShownRef = useRef(false);
-  const cloudTtsNoticeShownRef = useRef(false);
 
   const title = role === "elder" ? "正在和 AI 陪伴小助手通话" : "正在和故事小伙伴通话";
   const copy =
     role === "elder"
       ? {
           listening: "正在听您说话",
-          missed: "没听清楚，您可以再说一遍",
+          interim: "我正在听：",
+          missed: "没有听清楚，您可以再说一遍。",
           heard: "我听到了：",
-          thinking: "我正在帮您整理",
-          speaking: "正在为您朗读",
+          thinking: "AI 正在想一想……",
+          speaking: "AI 正在朗读回复",
+          done: "您可以继续说，或者结束通话",
+          offHint: "点击“开始说话”后，我再听您说。",
         }
       : {
           listening: "我在听你说哦",
-          missed: "没听清楚，可以再说一遍",
+          interim: "我听到你在说：",
+          missed: "没有听清楚，你可以再说一遍。",
           heard: "我听到了这句话：",
-          thinking: "故事小伙伴想一想",
-          speaking: "我来读给你听",
+          thinking: "故事小伙伴想一想……",
+          speaking: "故事小伙伴正在读回复",
+          done: "你可以继续说，或者结束通话",
+          offHint: "点击“开始说话”后，我再听你说。",
         };
 
   useEffect(() => {
+    activeRef.current = true;
     if (voiceMode() === "realtime") {
       onShowToast("实时语音服务未配置，已使用浏览器轮次式语音对话。", "info");
     }
@@ -107,24 +113,18 @@ export default function AiVoiceCallPanel({
       startedAt: new Date(startedAtRef.current).toISOString(),
       status: "active",
     });
-    const startTimer = window.setTimeout(() => startListening(true), 350);
     return () => {
       activeRef.current = false;
-      window.clearTimeout(startTimer);
       stopVoiceTimer();
       stopSpeaking();
-      recognitionRef.current?.stop();
+      recognitionRef.current?.abort();
     };
-  }, [addAiCallSession, currentStory?.id, currentTask?.id, currentUser.familyId, currentUser.id, onShowToast, role]);
+  }, []);
 
   function handleSpeechNotice(message: string) {
     if (message === NO_NATURAL_CHINESE_VOICE_MESSAGE) {
       if (noVoiceNoticeShownRef.current) return;
       noVoiceNoticeShownRef.current = true;
-    }
-    if (message.includes("云端语音服务")) {
-      if (cloudTtsNoticeShownRef.current) return;
-      cloudTtsNoticeShownRef.current = true;
     }
     onShowToast(message, "info");
   }
@@ -142,33 +142,43 @@ export default function AiVoiceCallPanel({
       window.clearInterval(listenTimerRef.current);
       listenTimerRef.current = null;
     }
+    if (permissionTextTimerRef.current != null) {
+      window.clearTimeout(permissionTextTimerRef.current);
+      permissionTextTimerRef.current = null;
+    }
   }
 
-  function stopRecognition() {
-    ignoreRecognitionEndRef.current = true;
-    recognitionRef.current?.stop();
+  function stopRecognition(abort = false) {
+    if (abort) {
+      ignoreRecognitionEndRef.current = true;
+      recognitionRef.current?.abort();
+    } else {
+      recognitionRef.current?.stop();
+    }
     recognitionRef.current = null;
     stopVoiceTimer();
   }
 
   function finishCall() {
     activeRef.current = false;
-    stopRecognition();
+    stopRecognition(true);
     stopSpeaking();
     const duration = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
     endAiCallSession(sessionIdRef.current, duration, "ended");
     onClose();
   }
 
-  function startListening(force = false) {
-    if (!activeRef.current || (!force && micMuted)) return;
+  function startListening() {
+    if (!activeRef.current || speechRecognitionState === "permission_requesting" || speechRecognitionState === "listening") {
+      return;
+    }
     stopSpeaking();
-    setIsSpeaking(false);
+    setTtsState(isSpeechSupported() ? "ready" : "unsupported");
+    setTtsMessage("");
     setErrorMessage("");
 
-    if (!recognitionSupported) {
-      setVoiceState("error");
-      setMicState("denied");
+    if (!isSpeechRecognitionSupported()) {
+      setSpeechRecognitionState("unsupported");
       setErrorMessage("当前浏览器不支持语音识别，请改用文字输入。");
       return;
     }
@@ -178,36 +188,54 @@ export default function AiVoiceCallPanel({
     recognitionHadErrorRef.current = false;
     ignoreRecognitionEndRef.current = false;
     setTranscript("");
+    setManualText("");
     setListeningSeconds(0);
-    setVoiceState("permission_requesting");
-    setMicState("requesting");
-    recognitionRef.current = startSpeechRecognition({
+    setVoiceOpeningText("正在打开麦克风……");
+    setSpeechRecognitionState("permission_requesting");
+    permissionTextTimerRef.current = window.setTimeout(() => {
+      setVoiceOpeningText("正在请求麦克风权限……");
+      permissionTextTimerRef.current = null;
+    }, 350);
+
+    const recognizer = createSpeechRecognizer({
       lang: "zh-CN",
+      interimResults: true,
       onStart: () => {
         if (!activeRef.current) return;
-        setMicState("on");
-        setVoiceState("listening");
+        setSpeechRecognitionState("listening");
         startVoiceTimer();
       },
-      onResult: (text, isFinal) => {
+      onInterim: (text) => {
         if (!text) return;
-        if (isFinal) {
-          finalTranscriptRef.current = `${finalTranscriptRef.current}${text}`;
-          interimTranscriptRef.current = "";
-        } else {
-          interimTranscriptRef.current = text;
-        }
+        interimTranscriptRef.current = text;
         const clean = `${finalTranscriptRef.current}${interimTranscriptRef.current}`.trim();
         setTranscript(clean);
         setManualText(clean);
       },
-      onError: (message) => {
+      onFinal: (text) => {
+        if (!text) return;
+        finalTranscriptRef.current = `${finalTranscriptRef.current}${text}`;
+        interimTranscriptRef.current = "";
+        const clean = finalTranscriptRef.current.trim();
+        setTranscript(clean);
+        setManualText(clean);
+      },
+      onError: (errorType, message) => {
+        if (ignoreRecognitionEndRef.current) return;
         recognitionHadErrorRef.current = true;
         stopVoiceTimer();
-        setMicState(message.includes("权限") ? "denied" : "off");
-        setVoiceState("error");
+        if (errorType === "not-allowed" || errorType === "service-not-allowed") {
+          setSpeechRecognitionState("permission_denied");
+        } else if (errorType === "network") {
+          setSpeechRecognitionState("network_error");
+        } else if (errorType === "no-speech") {
+          setSpeechRecognitionState("no_result");
+        } else if (errorType === "unsupported") {
+          setSpeechRecognitionState("unsupported");
+        } else {
+          setSpeechRecognitionState("error");
+        }
         setErrorMessage(message);
-        onShowToast(message, "info");
       },
       onEnd: () => {
         stopVoiceTimer();
@@ -216,104 +244,84 @@ export default function AiVoiceCallPanel({
           ignoreRecognitionEndRef.current = false;
           return;
         }
-        if (!activeRef.current || recognitionHadErrorRef.current || micMuted) return;
-        setMicState("off");
+        if (!activeRef.current || recognitionHadErrorRef.current) return;
         const clean = `${finalTranscriptRef.current}${interimTranscriptRef.current}`.trim();
         if (!clean) {
-          setVoiceState("error");
+          setSpeechRecognitionState("no_result");
           setErrorMessage(copy.missed);
           return;
         }
         setTranscript(clean);
         setManualText("");
-        setVoiceState("recognized");
-        window.setTimeout(() => {
-          if (activeRef.current) void sendRound(clean);
-        }, 450);
+        setSpeechRecognitionState("recognized");
       },
     });
+
+    recognitionRef.current = recognizer;
+    recognizer.start();
   }
 
   function stopListening() {
-    if (voiceState !== "listening" && voiceState !== "permission_requesting") return;
-    setVoiceState("recognizing");
-    setMicState("off");
+    if (speechRecognitionState !== "listening" && speechRecognitionState !== "permission_requesting") return;
+    setSpeechRecognitionState("recognizing");
     stopVoiceTimer();
     recognitionRef.current?.stop();
   }
 
-  function toggleMute() {
-    if (micMuted) {
-      setMicMuted(false);
-      setMicState("off");
-      window.setTimeout(() => startListening(true), 120);
-      return;
-    }
-    setMicMuted(true);
-    setMicState("off");
-    setVoiceState((current) => (current === "speaking" ? current : "idle"));
-    stopRecognition();
+  function muteMic() {
+    stopRecognition(true);
+    setSpeechRecognitionState("idle");
+    setErrorMessage("");
   }
 
-  function returnToListening() {
-    if (!activeRef.current) return;
-    window.setTimeout(() => {
-      if (!activeRef.current) return;
-      if (micMuted) {
-        setVoiceState("idle");
-        setMicState("off");
-        return;
-      }
-      startListening(true);
-    }, 350);
-  }
-
-  function playReply(text = reply, fromAuto = false) {
+  async function playReply(text = reply, fromAuto = false) {
     const clean = text.trim();
     if (!clean) return;
     if (!isSpeechSupported()) {
-      setVoiceState("idle");
-      setIsSpeaking(false);
-      onShowToast("当前浏览器不支持语音播报，请阅读文字回复。", "info");
-      returnToListening();
+      const message = "当前浏览器不支持语音朗读，请阅读文字回复。";
+      setTtsState("unsupported");
+      setTtsMessage(message);
       return;
     }
-    setVoiceState("speaking");
-    speakText(clean, {
-      role,
-      voiceURI: voiceSettings.selectedVoiceURI,
-      ratePreset: voiceSettings.ratePreset,
-      onNotice: handleSpeechNotice,
-      onStart: () => {
-        setIsSpeaking(true);
-        setVoiceState("speaking");
-        setMicState("off");
-      },
-      onEnd: () => {
-        setIsSpeaking(false);
-        returnToListening();
-      },
-      onError: () => {
-        setIsSpeaking(false);
-        setVoiceState("idle");
-        onShowToast(
-          fromAuto ? "浏览器阻止了自动朗读，请点击播放按钮。" : "语音播报失败，请稍后再试。",
-          "error"
-        );
-      },
-    });
+
+    setTtsState("loading_voices");
+    setTtsMessage("正在准备朗读……");
+    try {
+      await speakText(clean, {
+        role,
+        auto: fromAuto,
+        voiceURI: voiceSettings.selectedVoiceURI,
+        ratePreset: voiceSettings.ratePreset,
+        onNotice: handleSpeechNotice,
+        onStart: () => {
+          setTtsState("speaking");
+          setTtsMessage("");
+          setSpeechRecognitionState("idle");
+        },
+        onEnd: () => {
+          setTtsState("ready");
+          setTtsMessage("");
+        },
+        onError: (message) => {
+          setTtsState(fromAuto ? "blocked" : "error");
+          setTtsMessage(message);
+        },
+      });
+    } catch {
+      // Error state is already set by onError.
+    }
   }
 
-  async function sendRound(text = manualText) {
+  async function sendRound(text = transcript || manualText) {
     const clean = text.trim();
     if (!clean) {
-      setVoiceState("error");
-      setErrorMessage("请先说一句或输入一句话。");
+      setSpeechRecognitionState("no_result");
+      setErrorMessage(copy.missed);
       return;
     }
-    stopRecognition();
-    setVoiceState("thinking");
-    setMicState("off");
+    stopRecognition(true);
+    setIsThinking(true);
+    setSpeechRecognitionState("idle");
     setTranscript(clean);
     setManualText("");
 
@@ -354,7 +362,8 @@ export default function AiVoiceCallPanel({
       };
       addAiChatMessages([userMessage, assistantMessage]);
       setReply(answer.content);
-      playReply(answer.content, true);
+      setIsThinking(false);
+      void playReply(answer.content, true);
       if (answer.notice) onShowToast(answer.notice, "info");
     } catch {
       const fallback =
@@ -377,45 +386,235 @@ export default function AiVoiceCallPanel({
         },
       ]);
       setReply(fallback);
-      playReply(fallback, true);
+      setIsThinking(false);
+      void playReply(fallback, true);
       onShowToast("AI 服务暂时不可用，已切换为演示回复。", "info");
+    } finally {
+      setIsThinking(false);
     }
   }
 
   function stopCurrentSpeaking() {
     stopSpeaking();
-    setIsSpeaking(false);
-    setVoiceState("idle");
-    returnToListening();
+    setTtsState(isSpeechSupported() ? "ready" : "unsupported");
+    setTtsMessage("");
   }
 
   const micStatusText =
-    micState === "on"
+    speechRecognitionState === "listening"
       ? "麦克风已开启"
-      : micState === "requesting"
-        ? "正在请求权限"
-        : micState === "denied"
-          ? "权限被拒绝"
+      : speechRecognitionState === "permission_requesting"
+        ? "正在打开麦克风……"
+        : speechRecognitionState === "permission_denied"
+          ? "麦克风权限被拒绝"
           : "麦克风已关闭";
 
-  const mainStatus =
-    voiceState === "permission_requesting"
-      ? "正在请求麦克风权限……"
-      : voiceState === "listening"
-        ? copy.listening
-        : voiceState === "recognizing"
-          ? "正在识别你的声音……"
-          : voiceState === "recognized"
-            ? `${copy.heard}${transcript}`
-            : voiceState === "thinking"
-              ? copy.thinking
-              : voiceState === "speaking"
-                ? copy.speaking
-                : voiceState === "error"
-                  ? errorMessage || "语音输入暂时不可用"
-                  : micMuted
-                    ? "麦克风已关闭"
-                    : "准备开始说话";
+  const mainStatus = (() => {
+    if (speechRecognitionState === "permission_requesting") return voiceOpeningText;
+    if (speechRecognitionState === "listening") return `${copy.listening} ${formatVoiceSeconds(listeningSeconds)}`;
+    if (speechRecognitionState === "recognizing") return "正在识别您的声音……";
+    if (speechRecognitionState === "recognized") return `${copy.heard}${transcript}`;
+    if (speechRecognitionState === "unsupported") return "当前浏览器不支持语音识别，请改用文字输入。";
+    if (speechRecognitionState === "permission_denied") return "麦克风权限被拒绝，请在浏览器地址栏允许麦克风。";
+    if (speechRecognitionState === "network_error") return "浏览器语音识别服务暂时不可用，请改用文字输入。";
+    if (speechRecognitionState === "no_result") return errorMessage || copy.missed;
+    if (speechRecognitionState === "error") return errorMessage || "当前浏览器语音识别服务暂时不可用，请改用文字输入。";
+    if (isThinking) return copy.thinking;
+    if (ttsState === "loading_voices") return "AI 正在准备朗读回复";
+    if (ttsState === "speaking") return copy.speaking;
+    if (ttsState === "blocked" || ttsState === "error" || (ttsState === "unsupported" && ttsMessage)) {
+      return ttsMessage;
+    }
+    if (reply) return copy.done;
+    return "麦克风已关闭";
+  })();
+
+  const helperText = (() => {
+    if (speechRecognitionState === "idle" && !isThinking && !reply) return copy.offHint;
+    if (speechRecognitionState === "listening") return "说完后点击“停止说话”。";
+    if (speechRecognitionState === "recognized") return "确认无误后，可以发送给 AI。";
+    if (ttsState === "blocked") return "自动朗读开关仍然保留，您可以手动点击播放。";
+    if (reply && ttsState === "ready" && !isThinking) return "继续说时，我会重新打开麦克风。";
+    return "";
+  })();
+
+  function renderPrimaryButtons() {
+    if (speechRecognitionState === "permission_requesting") {
+      return (
+        <>
+          <button
+            type="button"
+            onClick={muteMic}
+            className="flex h-12 items-center justify-center rounded-xl border border-[#4B5563] font-black text-[#4B5563] hover:bg-[#F3F4F6]"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={finishCall}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+          >
+            <PhoneOff className="h-4 w-4" />
+            结束通话
+          </button>
+        </>
+      );
+    }
+
+    if (speechRecognitionState === "listening") {
+      return (
+        <>
+          <button
+            type="button"
+            onClick={stopListening}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#EA580C] font-black text-[#C2410C] hover:bg-[#FFF7ED]"
+          >
+            <Square className="h-4 w-4" />
+            停止说话
+          </button>
+          <button
+            type="button"
+            onClick={muteMic}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#0E9F6E] font-black text-[#0E9F6E] hover:bg-[#EAF5F0]"
+          >
+            <MicOff className="h-4 w-4" />
+            静音
+          </button>
+          <button
+            type="button"
+            onClick={finishCall}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+          >
+            <PhoneOff className="h-4 w-4" />
+            结束通话
+          </button>
+        </>
+      );
+    }
+
+    if (speechRecognitionState === "recognizing" || isThinking || ttsState === "loading_voices") {
+      return (
+        <button
+          type="button"
+          onClick={finishCall}
+          className="col-span-full flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+        >
+          <PhoneOff className="h-4 w-4" />
+          结束通话
+        </button>
+      );
+    }
+
+    if (speechRecognitionState === "recognized") {
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => void sendRound(transcript)}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#0E9F6E] font-black text-white hover:bg-[#0C8F62]"
+          >
+            <Send className="h-4 w-4" />
+            发送给 AI
+          </button>
+          <button
+            type="button"
+            onClick={startListening}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#0E9F6E] font-black text-[#0E9F6E] hover:bg-[#EAF5F0]"
+          >
+            <Mic className="h-4 w-4" />
+            重新说一遍
+          </button>
+          <button
+            type="button"
+            onClick={finishCall}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+          >
+            <PhoneOff className="h-4 w-4" />
+            结束通话
+          </button>
+        </>
+      );
+    }
+
+    if (ttsState === "speaking") {
+      return (
+        <>
+          <button
+            type="button"
+            onClick={stopCurrentSpeaking}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#B42318] font-black text-[#B42318] hover:bg-[#FEF2F2]"
+          >
+            <Square className="h-4 w-4" />
+            停止朗读
+          </button>
+          <button
+            type="button"
+            onClick={finishCall}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+          >
+            <PhoneOff className="h-4 w-4" />
+            结束通话
+          </button>
+        </>
+      );
+    }
+
+    if (reply && (ttsState === "ready" || ttsState === "blocked" || ttsState === "error")) {
+      return (
+        <>
+          <button
+            type="button"
+            onClick={startListening}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#0E9F6E] font-black text-[#0E9F6E] hover:bg-[#EAF5F0]"
+          >
+            <Mic className="h-4 w-4" />
+            继续说
+          </button>
+          <button
+            type="button"
+            onClick={() => void playReply(reply)}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#D8C8B0] font-black text-[#6B4F35] hover:bg-[#FFF7ED]"
+          >
+            <RotateCcw className="h-4 w-4" />
+            重播回复
+          </button>
+          <button
+            type="button"
+            onClick={finishCall}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+          >
+            <PhoneOff className="h-4 w-4" />
+            结束通话
+          </button>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={startListening}
+          disabled={speechRecognitionState === "unsupported"}
+          className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#0E9F6E] font-black text-white hover:bg-[#0C8F62] disabled:opacity-50"
+        >
+          <Mic className="h-4 w-4" />
+          开始说话
+        </button>
+        <button
+          type="button"
+          onClick={finishCall}
+          className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
+        >
+          <PhoneOff className="h-4 w-4" />
+          结束通话
+        </button>
+      </>
+    );
+  }
+
+  const iconState =
+    speechRecognitionState === "listening" ? "listening" : ttsState === "speaking" ? "speaking" : "idle";
 
   return (
     <div className="fixed inset-0 z-[180] flex items-center justify-center bg-black/45 p-4">
@@ -423,12 +622,12 @@ export default function AiVoiceCallPanel({
         <div className="text-center">
           <div
             className={`mx-auto flex ${role === "elder" ? "h-24 w-24" : "h-20 w-20"} items-center justify-center rounded-full ${
-              voiceState === "listening" ? "bg-[#FFF7ED] text-[#EA580C]" : "bg-[#EAF5F0] text-[#0E9F6E]"
+              iconState === "listening" ? "bg-[#FFF7ED] text-[#EA580C]" : "bg-[#EAF5F0] text-[#0E9F6E]"
             }`}
           >
-            {voiceState === "listening" ? (
+            {iconState === "listening" ? (
               <Mic className={`${role === "elder" ? "h-12 w-12" : "h-10 w-10"} animate-pulse`} />
-            ) : voiceState === "speaking" ? (
+            ) : iconState === "speaking" ? (
               <Volume2 className={role === "elder" ? "h-12 w-12" : "h-10 w-10"} />
             ) : (
               <MicOff className={role === "elder" ? "h-12 w-12" : "h-10 w-10"} />
@@ -437,9 +636,9 @@ export default function AiVoiceCallPanel({
           <h3 className="mt-4 text-2xl font-black text-[#111827]">{title}</h3>
           <p
             className={`mt-2 rounded-full px-3 py-1 text-sm font-black ${
-              micState === "on"
+              speechRecognitionState === "listening"
                 ? "bg-[#EAF5F0] text-[#0E6F52]"
-                : micState === "denied"
+                : speechRecognitionState === "permission_denied"
                   ? "bg-[#FEE2E2] text-[#B42318]"
                   : "bg-[#FAF8F2] text-[#4B5563]"
             }`}
@@ -449,77 +648,28 @@ export default function AiVoiceCallPanel({
           <div className="mt-4 rounded-2xl bg-[#FAF8F2] p-4 text-left">
             <div className="flex items-center justify-between gap-3">
               <p className="text-xl font-black text-[#111827]">{mainStatus}</p>
-              {voiceState === "listening" && (
-                <span className="rounded-lg bg-white px-2 py-1 text-sm font-black text-[#9A3412]">
-                  {formatVoiceSeconds(listeningSeconds)}
-                </span>
-              )}
-              {(voiceState === "permission_requesting" || voiceState === "recognizing" || voiceState === "thinking") && (
-                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-[#0E9F6E]" />
-              )}
+              {(speechRecognitionState === "permission_requesting" ||
+                speechRecognitionState === "recognizing" ||
+                isThinking ||
+                ttsState === "loading_voices") && <Loader2 className="h-5 w-5 shrink-0 animate-spin text-[#0E9F6E]" />}
             </div>
-            {voiceState === "listening" && <p className="mt-2 font-bold text-[#6B4F35]">说完后点击“停止说话”。</p>}
-            {transcript && voiceState !== "recognized" && (
+            {helperText && <p className="mt-2 font-bold text-[#6B4F35]">{helperText}</p>}
+            {transcript && speechRecognitionState !== "recognized" && (
               <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-bold text-[#8A4700]">
-                {copy.heard}
+                {copy.interim}
                 {transcript}
               </p>
             )}
-            {voiceState === "speaking" && (
+            {reply && (ttsState === "speaking" || ttsState === "ready" || ttsState === "blocked" || ttsState === "error") && (
               <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-bold leading-6 text-[#4B5563]">{reply}</p>
             )}
-            {voiceState === "error" && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => startListening(true)}
-                  className="h-10 rounded-lg border border-[#B42318] px-3 text-sm font-black text-[#B42318]"
-                >
-                  重试
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setVoiceState("idle")}
-                  className="h-10 rounded-lg bg-white px-3 text-sm font-black text-[#4B5563]"
-                >
-                  改用文字输入
-                </button>
-              </div>
-            )}
           </div>
-
-          {reply && (
-            <div className="mt-3 flex flex-wrap justify-center gap-2">
-              <button
-                onClick={() => playReply(reply)}
-                className="inline-flex h-9 items-center gap-1 rounded-lg border border-[#0E9F6E] bg-white px-3 text-sm font-black text-[#0E6F52]"
-              >
-                <Volume2 className="h-4 w-4" />
-                {isSpeaking ? "正在朗读" : "播放"}
-              </button>
-              <button
-                onClick={stopCurrentSpeaking}
-                disabled={!isSpeaking}
-                className="inline-flex h-9 items-center gap-1 rounded-lg border border-[#B42318] bg-white px-3 text-sm font-black text-[#B42318] disabled:opacity-45"
-              >
-                <Square className="h-4 w-4" />
-                停止朗读
-              </button>
-              <button
-                onClick={() => playReply(reply)}
-                className="inline-flex h-9 items-center gap-1 rounded-lg border border-[#D8C8B0] bg-white px-3 text-sm font-black text-[#6B4F35]"
-              >
-                <RotateCcw className="h-4 w-4" />
-                重播
-              </button>
-            </div>
-          )}
         </div>
 
         <div className="mt-4 rounded-xl border border-[#D1D5DB] bg-[#FAF8F2] p-3">
           <label className="block">
             <span className="text-sm font-black text-[#111827]">
-              {recognitionSupported ? "也可以打字补充这一句" : "语音识别不可用，请打字发送"}
+              {speechRecognitionState === "unsupported" ? "语音识别不可用，请打字发送" : "也可以打字补充这一句"}
             </span>
             <textarea
               value={manualText}
@@ -530,8 +680,8 @@ export default function AiVoiceCallPanel({
           </label>
           <button
             type="button"
-            onClick={() => void sendRound()}
-            disabled={voiceState === "thinking"}
+            onClick={() => void sendRound(manualText)}
+            disabled={isThinking}
             className="mt-2 inline-flex h-10 items-center gap-2 rounded-lg bg-[#0E9F6E] px-3 text-sm font-black text-white disabled:opacity-50"
           >
             <Send className="h-4 w-4" />
@@ -539,29 +689,8 @@ export default function AiVoiceCallPanel({
           </button>
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          <button
-            onClick={toggleMute}
-            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#0E9F6E] font-black text-[#0E9F6E] hover:bg-[#EAF5F0]"
-          >
-            {micMuted ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-            {micMuted ? "取消静音" : "静音"}
-          </button>
-          <button
-            onClick={stopListening}
-            disabled={voiceState !== "listening" && voiceState !== "permission_requesting"}
-            className="flex h-12 items-center justify-center gap-2 rounded-xl border border-[#EA580C] font-black text-[#C2410C] hover:bg-[#FFF7ED] disabled:opacity-50"
-          >
-            <Square className="h-4 w-4" />
-            停止说话
-          </button>
-          <button
-            onClick={finishCall}
-            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#B42318] font-black text-white hover:bg-[#991B1B]"
-          >
-            <PhoneOff className="h-4 w-4" />
-            结束通话
-          </button>
+        <div className={`mt-4 grid gap-3 ${reply || speechRecognitionState === "recognized" || speechRecognitionState === "listening" ? "grid-cols-3" : "grid-cols-2"}`}>
+          {renderPrimaryButtons()}
         </div>
       </section>
     </div>

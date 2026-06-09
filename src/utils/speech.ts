@@ -2,6 +2,15 @@ import { AiUserRole } from "../types";
 
 export type VoiceRatePreset = "slow" | "normal" | "fast";
 
+export type TtsState =
+  | "idle"
+  | "loading_voices"
+  | "ready"
+  | "speaking"
+  | "blocked"
+  | "unsupported"
+  | "error";
+
 export type VoiceSettings = {
   autoSpeak: boolean;
   selectedVoiceURI: string | null;
@@ -10,6 +19,7 @@ export type VoiceSettings = {
 
 type SpeakOptions = {
   role?: AiUserRole;
+  auto?: boolean;
   rate?: number;
   pitch?: number;
   lang?: string;
@@ -17,8 +27,16 @@ type SpeakOptions = {
   ratePreset?: VoiceRatePreset;
   onStart?: () => void;
   onEnd?: () => void;
-  onError?: () => void;
+  onError?: (message: string) => void;
   onNotice?: (message: string) => void;
+};
+
+type ActiveSpeech = {
+  utterance: SpeechSynthesisUtterance;
+  stopExpected: boolean;
+  keepAliveTimer: number | null;
+  resolve: () => void;
+  reject: (error: Error) => void;
 };
 
 const VOICE_SETTINGS_KEY = "voiceSettings";
@@ -32,13 +50,11 @@ export const preferredVoiceKeywords = [
   "Microsoft Xiaoxiao",
   "Microsoft Yunxi",
   "Microsoft Yaoyao",
-  "Tingting",
-  "Sinji",
-  "Mei-Jia",
   "Google 普通话",
   "Google Mandarin",
-  "Chinese",
+  "Tingting",
   "zh-CN",
+  "Chinese",
   "Mandarin",
 ];
 
@@ -46,6 +62,9 @@ export const NO_NATURAL_CHINESE_VOICE_MESSAGE =
   "当前浏览器没有更自然的中文语音，将使用系统默认语音。";
 export const CLOUD_TTS_UNCONFIGURED_MESSAGE =
   "云端语音服务未配置，已使用浏览器朗读。";
+
+let voicesPromise: Promise<SpeechSynthesisVoice[]> | null = null;
+let activeSpeech: ActiveSpeech | null = null;
 
 function hasWindow(): boolean {
   return typeof window !== "undefined";
@@ -76,16 +95,17 @@ export function loadVoiceSettings(): VoiceSettings {
 }
 
 export function saveVoiceSettings(patch: Partial<VoiceSettings>): VoiceSettings {
+  const current = loadVoiceSettings();
   const next: VoiceSettings = {
-    ...loadVoiceSettings(),
+    ...current,
     ...patch,
     selectedVoiceURI:
       typeof patch.selectedVoiceURI === "string" && patch.selectedVoiceURI.trim()
         ? patch.selectedVoiceURI
         : patch.selectedVoiceURI === null
           ? null
-          : loadVoiceSettings().selectedVoiceURI,
-    ratePreset: normalizeRatePreset(patch.ratePreset ?? loadVoiceSettings().ratePreset),
+          : current.selectedVoiceURI,
+    ratePreset: normalizeRatePreset(patch.ratePreset ?? current.ratePreset),
   };
   if (hasWindow()) {
     window.localStorage.setItem(VOICE_SETTINGS_KEY, JSON.stringify(next));
@@ -112,19 +132,45 @@ export function getChineseVoices(voices = getAllVoices()): SpeechSynthesisVoice[
   });
 }
 
+export async function loadChineseVoices(): Promise<SpeechSynthesisVoice[]> {
+  if (!isSpeechSupported()) return [];
+  const currentVoices = window.speechSynthesis.getVoices();
+  if (currentVoices.length > 0) return getChineseVoices(currentVoices);
+  if (voicesPromise) return voicesPromise;
+
+  voicesPromise = new Promise((resolve) => {
+    const finish = () => {
+      window.clearTimeout(timeoutId);
+      window.speechSynthesis.removeEventListener("voiceschanged", finish);
+      voicesPromise = null;
+      resolve(getChineseVoices(window.speechSynthesis.getVoices()));
+    };
+    const timeoutId = window.setTimeout(finish, 1200);
+    window.speechSynthesis.addEventListener("voiceschanged", finish);
+  });
+
+  return voicesPromise;
+}
+
 function voiceScore(voice: SpeechSynthesisVoice, role: AiUserRole): number {
   const text = `${voice.name} ${voice.lang} ${voice.voiceURI}`.toLowerCase();
   const keywordIndex = preferredVoiceKeywords.findIndex((keyword) => text.includes(keyword.toLowerCase()));
-  const keywordScore = keywordIndex >= 0 ? 200 - keywordIndex * 8 : 0;
-  const localeScore = voice.lang.toLowerCase() === "zh-cn" ? 40 : voice.lang.toLowerCase().startsWith("zh") ? 24 : 0;
+  const keywordScore = keywordIndex >= 0 ? 240 - keywordIndex * 12 : 0;
+  const localeScore = voice.lang.toLowerCase() === "zh-cn" ? 60 : voice.lang.toLowerCase().startsWith("zh") ? 36 : 0;
   const roleScore =
-    role === "child" && /(xiaoxiao|yaoyao|tingting|mei-jia|female|女)/i.test(text)
+    role === "child" && /(xiaoxiao|yaoyao|tingting|female|女)/i.test(text)
       ? 18
       : role === "elder" && /(yunxi|xiaoxiao|mandarin|普通话)/i.test(text)
         ? 14
         : 0;
   const localScore = voice.localService ? 4 : 0;
   return keywordScore + localeScore + roleScore + localScore;
+}
+
+export function getPreferredChineseVoice(role: AiUserRole): SpeechSynthesisVoice | null {
+  const chineseVoices = getChineseVoices();
+  if (!chineseVoices.length) return null;
+  return [...chineseVoices].sort((a, b) => voiceScore(b, role) - voiceScore(a, role))[0] ?? null;
 }
 
 export function selectChineseVoice(
@@ -136,121 +182,144 @@ export function selectChineseVoice(
     const selected = voices.find((voice) => voice.voiceURI === selectedVoiceURI);
     if (selected) return selected;
   }
-  const chineseVoices = getChineseVoices(voices);
-  if (!chineseVoices.length) return null;
-  return [...chineseVoices].sort((a, b) => voiceScore(b, role) - voiceScore(a, role))[0] ?? null;
+  return getPreferredChineseVoice(role);
 }
 
-function rateForRole(role: AiUserRole | undefined, preset: VoiceRatePreset): number {
+function rateForRole(role: AiUserRole, preset: VoiceRatePreset): number {
   if (role === "child") {
-    if (preset === "slow") return 0.95;
-    if (preset === "fast") return 1.05;
+    if (preset === "slow") return 0.92;
+    if (preset === "fast") return 1.08;
     return 1;
   }
-  if (preset === "slow") return 0.82;
-  if (preset === "fast") return 0.9;
-  return 0.86;
+  if (preset === "slow") return 0.78;
+  if (preset === "fast") return 0.94;
+  return 0.85;
 }
 
-function pitchForRole(role: AiUserRole | undefined): number {
-  return role === "child" ? 1.1 : 0.98;
+function pitchForRole(role: AiUserRole): number {
+  return role === "child" ? 1.1 : 0.95;
 }
 
-function ttsMode(): "browser" | "api" {
-  return import.meta.env.VITE_TTS_MODE === "api" ? "api" : "browser";
+function messageForSpeechError(options: SpeakOptions): string {
+  return options.auto
+    ? "浏览器暂时阻止了自动朗读，请点击播放按钮。"
+    : "朗读失败，请手动重试。";
 }
 
-function timeoutSignal(timeoutMs: number): AbortSignal {
-  const controller = new AbortController();
-  window.setTimeout(() => controller.abort(), timeoutMs);
-  return controller.signal;
+function clearActiveSpeechTimer(speech: ActiveSpeech): void {
+  if (speech.keepAliveTimer != null) {
+    window.clearInterval(speech.keepAliveTimer);
+    speech.keepAliveTimer = null;
+  }
 }
 
 export function stopSpeaking(): void {
   if (!isSpeechSupported()) return;
+  if (activeSpeech) {
+    activeSpeech.stopExpected = true;
+    clearActiveSpeechTimer(activeSpeech);
+  }
   window.speechSynthesis.cancel();
+  activeSpeech = null;
 }
 
-function speakWithBrowser(text: string, options: SpeakOptions): void {
-  if (!isSpeechSupported()) {
-    options.onError?.();
-    return;
-  }
-
-  stopSpeaking();
-  const settings = loadVoiceSettings();
-  const role = options.role ?? "elder";
-  const selectedVoice = selectChineseVoice(options.voiceURI ?? settings.selectedVoiceURI, role);
-  const utterance = new SpeechSynthesisUtterance(text);
-
-  if (selectedVoice) {
-    utterance.voice = selectedVoice;
-    utterance.lang = selectedVoice.lang || "zh-CN";
-  } else {
-    utterance.lang = options.lang ?? "zh-CN";
-    options.onNotice?.(NO_NATURAL_CHINESE_VOICE_MESSAGE);
-  }
-
-  utterance.rate = options.rate ?? rateForRole(role, options.ratePreset ?? settings.ratePreset);
-  utterance.pitch = options.pitch ?? pitchForRole(role);
-  utterance.volume = 1;
-  utterance.onstart = () => options.onStart?.();
-  utterance.onend = () => options.onEnd?.();
-  utterance.onerror = () => options.onError?.();
-
-  try {
-    window.speechSynthesis.speak(utterance);
-  } catch {
-    options.onError?.();
-  }
-}
-
-async function speakWithApiFallback(text: string, options: SpeakOptions): Promise<void> {
-  try {
-    const response = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        role: options.role ?? "elder",
-        voiceURI: options.voiceURI ?? loadVoiceSettings().selectedVoiceURI,
-        ratePreset: options.ratePreset ?? loadVoiceSettings().ratePreset,
-      }),
-      signal: timeoutSignal(8000),
-    });
-    if (!response.ok) {
-      options.onNotice?.(CLOUD_TTS_UNCONFIGURED_MESSAGE);
-      speakWithBrowser(text, options);
-      return;
-    }
-    const data = (await response.json().catch(() => ({}))) as { audioUrl?: string; message?: string };
-    if (!data.audioUrl) {
-      options.onNotice?.(data.message || CLOUD_TTS_UNCONFIGURED_MESSAGE);
-      speakWithBrowser(text, options);
-      return;
-    }
-    const audio = new Audio(data.audioUrl);
-    audio.onplay = () => options.onStart?.();
-    audio.onended = () => options.onEnd?.();
-    audio.onerror = () => {
-      options.onNotice?.(CLOUD_TTS_UNCONFIGURED_MESSAGE);
-      speakWithBrowser(text, options);
-    };
-    await audio.play();
-  } catch {
-    options.onNotice?.(CLOUD_TTS_UNCONFIGURED_MESSAGE);
-    speakWithBrowser(text, options);
-  }
-}
-
-export function speakText(text: string, options: SpeakOptions = {}): void {
+export async function speakText(text: string, options: SpeakOptions = {}): Promise<void> {
   const clean = text.trim();
   if (!clean) return;
 
-  if (ttsMode() === "api") {
-    void speakWithApiFallback(clean, options);
-    return;
+  if (!isSpeechSupported()) {
+    const message = "当前浏览器不支持语音朗读，请阅读文字回复。";
+    options.onError?.(message);
+    throw new Error(message);
   }
 
-  speakWithBrowser(clean, options);
+  stopSpeaking();
+  await loadChineseVoices();
+
+  return new Promise((resolve, reject) => {
+    const settings = loadVoiceSettings();
+    const role = options.role ?? "elder";
+    const utterance = new SpeechSynthesisUtterance(clean);
+    const selectedVoice = selectChineseVoice(options.voiceURI ?? settings.selectedVoiceURI, role);
+    let didFinish = false;
+    let didStart = false;
+    let startFallbackTimer: number | null = null;
+    const speech: ActiveSpeech = {
+      utterance,
+      stopExpected: false,
+      keepAliveTimer: null,
+      resolve,
+      reject,
+    };
+
+    const finish = () => {
+      if (didFinish) return;
+      didFinish = true;
+      if (activeSpeech === speech) activeSpeech = null;
+      if (startFallbackTimer != null) {
+        window.clearTimeout(startFallbackTimer);
+        startFallbackTimer = null;
+      }
+      clearActiveSpeechTimer(speech);
+    };
+
+    const fail = (message: string) => {
+      finish();
+      options.onError?.(message);
+      reject(new Error(message));
+    };
+
+    activeSpeech = speech;
+
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang || "zh-CN";
+    } else {
+      utterance.lang = options.lang ?? "zh-CN";
+      options.onNotice?.(NO_NATURAL_CHINESE_VOICE_MESSAGE);
+    }
+
+    utterance.rate = options.rate ?? rateForRole(role, options.ratePreset ?? settings.ratePreset);
+    utterance.pitch = options.pitch ?? pitchForRole(role);
+    utterance.volume = 1;
+    utterance.onstart = () => {
+      if (didStart) return;
+      didStart = true;
+      options.onStart?.();
+    };
+    utterance.onend = () => {
+      finish();
+      if (!speech.stopExpected) options.onEnd?.();
+      resolve();
+    };
+    utterance.onerror = (event) => {
+      if (speech.stopExpected || event.error === "interrupted" || event.error === "canceled") {
+        finish();
+        resolve();
+        return;
+      }
+      fail(messageForSpeechError(options));
+    };
+
+    speech.keepAliveTimer = window.setInterval(() => {
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    }, 9000);
+
+    try {
+      window.speechSynthesis.speak(utterance);
+      startFallbackTimer = window.setTimeout(() => {
+        if (didFinish || didStart) return;
+        if (window.speechSynthesis.speaking) {
+          didStart = true;
+          options.onStart?.();
+          return;
+        }
+        fail(messageForSpeechError(options));
+      }, 4000);
+    } catch {
+      fail(messageForSpeechError(options));
+    }
+  });
 }
